@@ -124,8 +124,25 @@ $btnEmailSettings.Add_Click({
 
 $listBox = New-Object System.Windows.Forms.ListBox; $listBox.Location = "600, 20"; $listBox.Size = "300, 600"; $listBox.BackColor = "Black"; $listBox.ForeColor = "White"
 
+# --- ACTION Logic: Run Job Now ---
+$btnRun = New-Object System.Windows.Forms.Button; $btnRun.Text = "RUN JOB NOW"; $btnRun.Location = "20, 800"; $btnRun.Size = "180, 50"; $btnRun.BackColor = "SteelBlue"; $btnRun.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$btnRun.Add_Click({
+    $jName = $listBox.SelectedItem; if(-not $jName){ [System.Windows.Forms.MessageBox]::Show("Please select a job from the list first."); return }
+    $jobs = Get-Content $jobFile | ConvertFrom-Json; $job = $jobs.$jName
+    
+    $exe = if($job.mode -eq "machine"){"machinebackup.exe"}else{"proxmoxbackupgo.exe"}
+    $args = "-baseurl `"$($job.url)`" -certfingerprint `"$($job.fp)`" -authid `"$($job.token)`" -secret `"$($job.secret)`" -datastore `"$($job.store)`""
+    if($job.mode -eq "machine"){ foreach($d in $job.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } } }
+    else { $args += " -backupdir `"$($job.source)`"" }
+    
+    $mArgs = Get-MailArgs
+    if ($mArgs) { $args += " " + ($mArgs -join " ") }
+    
+    Start-Process "$PSScriptRoot\$exe" -ArgumentList $args -Wait
+})
+
 # --- SAVE JOB Logic ---
-$btnSave = New-Object System.Windows.Forms.Button; $btnSave.Text = "SAVE JOB"; $btnSave.Location = "20, 800"; $btnSave.Size = "200, 50"; $btnSave.BackColor = "DarkGreen"
+$btnSave = New-Object System.Windows.Forms.Button; $btnSave.Text = "SAVE JOB"; $btnSave.Location = "210, 800"; $btnSave.Size = "180, 50"; $btnSave.BackColor = "DarkGreen"
 $btnSave.Add_Click({
     if (-not $txtJobName.Text) { [System.Windows.Forms.MessageBox]::Show("Please enter a job name."); return }
     $jobs = Get-Content $jobFile | ConvertFrom-Json
@@ -168,11 +185,8 @@ $btnSave.Add_Click({
     if ($chkEnableSched.Checked) {
         $exe = if($jobData.mode -eq "machine"){"machinebackup.exe"}else{"proxmoxbackupgo.exe"}
         $args = "-baseurl `"$($jobData.url)`" -certfingerprint `"$($jobData.fp)`" -authid `"$($jobData.token)`" -secret `"$($jobData.secret)`" -datastore `"$($jobData.store)`""
-        if($jobData.mode -eq "machine"){ 
-            foreach($d in $jobData.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } }
-        } else { 
-            $args += " -backupdir `"$($jobData.source)`"" 
-        }
+        if($jobData.mode -eq "machine"){ foreach($d in $jobData.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } } }
+        else { $args += " -backupdir `"$($jobData.source)`"" }
         $mArgs = Get-MailArgs
         if ($mArgs) { $args += " " + ($mArgs -join " ") }
         
@@ -190,7 +204,7 @@ $btnSave.Add_Click({
     [System.Windows.Forms.MessageBox]::Show("Job saved and synchronized.")
 })
 
-$btnDelete = New-Object System.Windows.Forms.Button; $btnDelete.Text = "DELETE JOB"; $btnDelete.Location = "240, 800"; $btnDelete.Size = "150, 50"; $btnDelete.BackColor = "Firebrick"
+$btnDelete = New-Object System.Windows.Forms.Button; $btnDelete.Text = "DELETE JOB"; $btnDelete.Location = "400, 800"; $btnDelete.Size = "150, 50"; $btnDelete.BackColor = "Firebrick"
 $btnDelete.Add_Click({
     if($listBox.SelectedItem){ 
         if ([System.Windows.Forms.MessageBox]::Show("Delete '$($listBox.SelectedItem)'?", "Confirm", "YesNo") -eq "Yes") {
@@ -213,6 +227,6 @@ $listBox.Add_SelectedIndexChanged({
     if($j.mode -eq "machine"){$radioMachine.Checked = $true}else{$radioDir.Checked = $true; $txtDirSource.Text = $j.source}
 })
 
-$mainForm.Controls.AddRange(@($labelJob, $txtJobName, $groupMode, $lblSrc, $txtDirSource, $btnBrowse, $checkedListBox, $groupSched, $btnEmailSettings, $btnSave, $btnDelete, $listBox))
+$mainForm.Controls.AddRange(@($labelJob, $txtJobName, $groupMode, $lblSrc, $txtDirSource, $btnBrowse, $checkedListBox, $groupSched, $btnEmailSettings, $btnRun, $btnSave, $btnDelete, $listBox))
 Update-List
 $mainForm.ShowDialog()
