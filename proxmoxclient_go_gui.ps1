@@ -130,7 +130,8 @@ $btnRun.Add_Click({
     $jName = $listBox.SelectedItem; if(-not $jName){ [System.Windows.Forms.MessageBox]::Show("Please select a job from the list first."); return }
     $jobs = Get-Content $jobFile | ConvertFrom-Json; $job = $jobs.$jName
     
-    $exe = if($job.mode -eq "machine"){"machinebackup.exe"}else{"proxmoxbackupgo.exe"}
+    # Corrected executable names
+    $exe = if($job.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
     $args = "-baseurl `"$($job.url)`" -certfingerprint `"$($job.fp)`" -authid `"$($job.token)`" -secret `"$($job.secret)`" -datastore `"$($job.store)`""
     if($job.mode -eq "machine"){ foreach($d in $job.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } } }
     else { $args += " -backupdir `"$($job.source)`"" }
@@ -183,7 +184,8 @@ $btnSave.Add_Click({
     
     $tName = "PBS_Backup_$($txtJobName.Text)"
     if ($chkEnableSched.Checked) {
-        $exe = if($jobData.mode -eq "machine"){"machinebackup.exe"}else{"proxmoxbackupgo.exe"}
+        # Corrected executable names
+        $exe = if($jobData.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
         $args = "-baseurl `"$($jobData.url)`" -certfingerprint `"$($jobData.fp)`" -authid `"$($jobData.token)`" -secret `"$($jobData.secret)`" -datastore `"$($jobData.store)`""
         if($jobData.mode -eq "machine"){ foreach($d in $jobData.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } } }
         else { $args += " -backupdir `"$($jobData.source)`"" }
