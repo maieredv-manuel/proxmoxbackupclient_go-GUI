@@ -22,8 +22,12 @@ $mainForm.ForeColor = "White"
 
 # --- Helper Functions ---
 function Get-PhysicalDisks {
-    # We grab the DeviceID exactly as it is (case-sensitive)
-    return Get-CimInstance Win32_DiskDrive | ForEach-Object { @{ ID = $_.DeviceID; Name = "Disk $($_.Index): $($_.Model) ($($_.DeviceID))" } }
+    # Force the path to lowercase 'physicaldrive' during detection
+    return Get-CimInstance Win32_DiskDrive | ForEach-Object { 
+        $rawId = $_.DeviceID
+        $fixedId = $rawId.Replace("PHYSICALDRIVE", "PhysicalDrive").Replace("physicaldrive", "PhysicalDrive")
+        @{ ID = $fixedId; Name = "Disk $($_.Index): $($_.Model) ($($fixedId))" } 
+    }
 }
 
 function Update-List {
@@ -127,7 +131,15 @@ $btnRun.Add_Click({
     $jobs = Get-Content $jobFile | ConvertFrom-Json; $job = $jobs.$jName
     $exe = if($job.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
     $args = "-baseurl `"$($job.url)`" -certfingerprint `"$($job.fp)`" -authid `"$($job.token)`" -secret `"$($job.secret)`" -datastore `"$($job.store)`""
-    if($job.mode -eq "machine"){ foreach($d in $job.source.Split(",")){ if($d.Trim()){ $args += " -backupdev `"$($d.Trim())`"" } } }
+    if($job.mode -eq "machine"){ 
+        foreach($d in $job.source.Split(",")){ 
+            if($d.Trim()){ 
+                # FORCE CASE SENSITIVITY HERE
+                $fixedDisk = $d.Trim().Replace("PHYSICALDRIVE", "PhysicalDrive")
+                $args += " -backupdev `"$($fixedDisk)`"" 
+            } 
+        } 
+    }
     else { $args += " -backupdir `"$($job.source)`"" }
     $mArgs = Get-MailArgs
     if ($mArgs) { $args += " " + ($mArgs -join " ") }
@@ -145,8 +157,10 @@ $btnSave.Add_Click({
     if($radioDir.Checked){ $src = $txtDirSource.Text } else {
         $selected = @()
         foreach ($item in $checkedListBox.CheckedItems) {
-            # Find the string inside brackets which contains the raw DeviceID
-            if ($item -match '\(([^)]+)\)') { $selected += $matches[1] }
+            if ($item -match '\(([^)]+)\)') { 
+                # Ensure the saved string is also fixed
+                $selected += $matches[1].Replace("PHYSICALDRIVE", "PhysicalDrive")
+            }
         }
         $src = $selected -join ","
     }
@@ -158,7 +172,14 @@ $btnSave.Add_Click({
     if ($chkEnableSched.Checked) {
         $exe = if($jobData.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
         $args = "-baseurl `"$($jobData.url)`" -certfingerprint `"$($jobData.fp)`" -authid `"$($jobData.token)`" -secret `"$($jobData.secret)`" -datastore `"$($jobData.store)`""
-        if($jobData.mode -eq "machine"){ foreach($d in $jobData.source.Split(",")){ if($d.Trim()){ $args += " -backupdev `"$($d.Trim())`"" } } }
+        if($jobData.mode -eq "machine"){ 
+            foreach($d in $jobData.source.Split(",")){ 
+                if($d.Trim()){ 
+                    $fixedDisk = $d.Trim().Replace("PHYSICALDRIVE", "PhysicalDrive")
+                    $args += " -backupdev `"$($fixedDisk)`"" 
+                } 
+            } 
+        }
         else { $args += " -backupdir `"$($jobData.source)`"" }
         $mArgs = Get-MailArgs
         if ($mArgs) { $args += " " + ($mArgs -join " ") }
