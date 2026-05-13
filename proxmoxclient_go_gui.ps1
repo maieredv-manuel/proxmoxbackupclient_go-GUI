@@ -14,7 +14,7 @@ if (-not (Test-Path $jobFile)) { "{}" | Out-File $jobFile -Encoding utf8 }
 if (-not (Test-Path $mailFile)) { "{}" | Out-File $mailFile -Encoding utf8 }
 
 $mainForm = New-Object System.Windows.Forms.Form
-$mainForm.Text = "Proxmox Backup Ultimate Manager"
+$mainForm.Text = "proxmoxclient_go_gui"
 $mainForm.Size = "950, 950"
 $mainForm.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $mainForm.ForeColor = "White"
