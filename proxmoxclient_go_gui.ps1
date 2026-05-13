@@ -8,17 +8,19 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit
 }
 
+# Configuration Paths
 $jobFile = "$PSScriptRoot\backup_jobs.json"
 $mailFile = "$PSScriptRoot\email_settings.json"
 if (-not (Test-Path $jobFile)) { "{}" | Out-File $jobFile -Encoding utf8 }
 if (-not (Test-Path $mailFile)) { "{}" | Out-File $mailFile -Encoding utf8 }
 
 $mainForm = New-Object System.Windows.Forms.Form
-$mainForm.Text = "proxmoxclient_go_gui"
+$mainForm.Text = "Proxmox Backup Ultimate Manager"
 $mainForm.Size = "950, 950"
 $mainForm.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $mainForm.ForeColor = "White"
 
+# --- Helper Functions ---
 function Get-PhysicalDisks {
     return Get-CimInstance Win32_DiskDrive | ForEach-Object { @{ ID = $_.DeviceID; Name = "Disk $($_.Index): $($_.Model) ($($_.DeviceID))" } }
 }
@@ -26,7 +28,9 @@ function Get-PhysicalDisks {
 function Update-List {
     $listBox.Items.Clear()
     $jobs = Get-Content $jobFile | ConvertFrom-Json
-    foreach ($n in $jobs.psobject.properties.name) { [void]$listBox.Items.Add($n) }
+    if ($null -ne $jobs) {
+        foreach ($n in $jobs.psobject.properties.name) { [void]$listBox.Items.Add($n) }
+    }
 }
 
 function Get-MailArgs {
@@ -40,6 +44,7 @@ function Get-MailArgs {
     return $args
 }
 
+# --- UI: Job Name & Type ---
 $labelJob = New-Object System.Windows.Forms.Label; $labelJob.Text = "Job Name:"; $labelJob.Location = "20, 20"; $labelJob.AutoSize = $true
 $txtJobName = New-Object System.Windows.Forms.TextBox; $txtJobName.Location = "150, 20"; $txtJobName.Width = 250
 
@@ -48,6 +53,7 @@ $radioDir = New-Object System.Windows.Forms.RadioButton; $radioDir.Text = "Direc
 $radioMachine = New-Object System.Windows.Forms.RadioButton; $radioMachine.Text = "Machine (Disk)"; $radioMachine.Location = "10,50"
 $groupMode.Controls.AddRange(@($radioDir, $radioMachine))
 
+# Source Selection
 $lblSrc = New-Object System.Windows.Forms.Label; $lblSrc.Text = "Source:"; $lblSrc.Location = "20, 160"; $lblSrc.AutoSize = $true
 $txtDirSource = New-Object System.Windows.Forms.TextBox; $txtDirSource.Location = "150, 160"; $txtDirSource.Width = 350
 $btnBrowse = New-Object System.Windows.Forms.Button; $btnBrowse.Text = "..."; $btnBrowse.Location = "510, 158"; $btnBrowse.Width = 40; $btnBrowse.BackColor = "DimGray"
@@ -64,6 +70,7 @@ $radioMachine.Add_CheckedChanged({
     $checkedListBox.Items.Clear(); (Get-PhysicalDisks) | ForEach-Object { [void]$checkedListBox.Items.Add($_.Name) }
 })
 
+# PBS Settings
 $y = 280
 $fields = @("PBS URL", "Fingerprint", "Token ID", "Secret", "Datastore")
 $inputs = @{}
@@ -74,7 +81,7 @@ foreach ($f in $fields) {
     $mainForm.Controls.Add($l); $mainForm.Controls.Add($t); $inputs[$f] = $t; $y += 35
 }
 
-# --- Planning Section (Layout Adjusted) ---
+# --- Planning Section ---
 $groupSched = New-Object System.Windows.Forms.GroupBox; $groupSched.Text = "Scheduling"; $groupSched.Location = "20, $y"; $groupSched.Size = "550,160"; $groupSched.ForeColor = "White"
 $chkEnableSched = New-Object System.Windows.Forms.CheckBox; $chkEnableSched.Text = "Enable scheduled backup"; $chkEnableSched.Location = "15,25"; $chkEnableSched.AutoSize = $true
 
@@ -95,7 +102,7 @@ $cmbInt.Add_SelectedIndexChanged({ $cmbDay.Visible = $lblDay.Visible = ($cmbInt.
 $groupSched.Controls.AddRange(@($chkEnableSched, $lblTime, $txtTime, $lblInt, $cmbInt, $lblDay, $cmbDay))
 $y += 180
 
-# Email Settings
+# --- Email Settings ---
 $btnEmailSettings = New-Object System.Windows.Forms.Button; $btnEmailSettings.Text = "Global Email Configuration"; $btnEmailSettings.Location = "20, $y"; $btnEmailSettings.Size = "250, 40"; $btnEmailSettings.BackColor = "DimGray"
 $btnEmailSettings.Add_Click({
     $eForm = New-Object System.Windows.Forms.Form; $eForm.Text = "Global Email Settings"; $eForm.Size = "500,620"; $eForm.BackColor = "DimGray"; $eForm.ForeColor = "White"; $eForm.StartPosition = "CenterParent"
@@ -117,23 +124,58 @@ $btnEmailSettings.Add_Click({
 
 $listBox = New-Object System.Windows.Forms.ListBox; $listBox.Location = "600, 20"; $listBox.Size = "300, 600"; $listBox.BackColor = "Black"; $listBox.ForeColor = "White"
 
+# --- SAVE JOB Logic ---
 $btnSave = New-Object System.Windows.Forms.Button; $btnSave.Text = "SAVE JOB"; $btnSave.Location = "20, 800"; $btnSave.Size = "200, 50"; $btnSave.BackColor = "DarkGreen"
 $btnSave.Add_Click({
     if (-not $txtJobName.Text) { [System.Windows.Forms.MessageBox]::Show("Please enter a job name."); return }
     $jobs = Get-Content $jobFile | ConvertFrom-Json
+    if ($null -eq $jobs) { $jobs = New-Object PSObject }
+
     $modeVal = if($radioDir.Checked){"dir"}else{"machine"}
-    $src = if($radioDir.Checked){$txtDirSource.Text}else{($checkedListBox.CheckedItems | ForEach-Object { if ($_ -match '(\\\\.\\\PhysicalDrive\d+)') { $matches[1] } }) -join ","}
-    $jobData = @{ mode=$modeVal; source=$src; url=$inputs["PBS URL"].Text; fp=$inputs["Fingerprint"].Text; token=$inputs["Token ID"].Text; secret=$inputs["Secret"].Text; store=$inputs["Datastore"].Text; sched=$chkEnableSched.Checked; time=$txtTime.Text; interval=$cmbInt.Text; day=$cmbDay.Text }
+    $src = ""
+    if($radioDir.Checked){
+        $src = $txtDirSource.Text
+    } else {
+        $selected = @()
+        foreach ($item in $checkedListBox.CheckedItems) {
+            if ($item -like "*\\.\PhysicalDrive*") {
+                $parts = $item.Split("()")
+                foreach($p in $parts) { if($p -like "\\.\*") { $selected += $p.Trim() } }
+            }
+        }
+        $src = $selected -join ","
+    }
+    
+    $jobData = @{ 
+        mode = $modeVal
+        source = $src
+        url = $inputs["PBS URL"].Text
+        fp = $inputs["Fingerprint"].Text
+        token = $inputs["Token ID"].Text
+        secret = $inputs["Secret"].Text
+        store = $inputs["Datastore"].Text
+        sched = $chkEnableSched.Checked
+        time = $txtTime.Text
+        interval = $cmbInt.Text
+        day = $cmbDay.Text 
+    }
+    
     if ($jobs.PSObject.Properties[$txtJobName.Text]) { $jobs.PSObject.Properties.Remove($txtJobName.Text) }
-    $jobs | Add-Member -Name $txtJobName.Text -Value $jobData
+    $jobs | Add-Member -MemberType NoteProperty -Name $txtJobName.Text -Value $jobData -Force
     $jobs | ConvertTo-Json | Out-File $jobFile -Encoding utf8
+    
     $tName = "PBS_Backup_$($txtJobName.Text)"
     if ($chkEnableSched.Checked) {
         $exe = if($jobData.mode -eq "machine"){"machinebackup.exe"}else{"proxmoxbackupgo.exe"}
         $args = "-baseurl `"$($jobData.url)`" -certfingerprint `"$($jobData.fp)`" -authid `"$($jobData.token)`" -secret `"$($jobData.secret)`" -datastore `"$($jobData.store)`""
-        if($jobData.mode -eq "machine"){ foreach($d in $jobData.source.Split(",")){ $args += " -drive `"$($d.Trim())`"" }} else { $args += " -backupdir `"$($jobData.source)`"" }
+        if($jobData.mode -eq "machine"){ 
+            foreach($d in $jobData.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } }
+        } else { 
+            $args += " -backupdir `"$($jobData.source)`"" 
+        }
         $mArgs = Get-MailArgs
         if ($mArgs) { $args += " " + ($mArgs -join " ") }
+        
         $action = New-ScheduledTaskAction -Execute "$PSScriptRoot\$exe" -Argument $args -WorkingDirectory $PSScriptRoot
         $startTime = Get-Date $jobData.time
         switch ($jobData.interval) {
@@ -143,6 +185,7 @@ $btnSave.Add_Click({
         }
         Register-ScheduledTask -TaskName $tName -Action $action -Trigger $trigger -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest) -Force
     } else { Unregister-ScheduledTask -TaskName $tName -Confirm:$false -ErrorAction SilentlyContinue }
+    
     Update-List
     [System.Windows.Forms.MessageBox]::Show("Job saved and synchronized.")
 })
@@ -151,8 +194,10 @@ $btnDelete = New-Object System.Windows.Forms.Button; $btnDelete.Text = "DELETE J
 $btnDelete.Add_Click({
     if($listBox.SelectedItem){ 
         if ([System.Windows.Forms.MessageBox]::Show("Delete '$($listBox.SelectedItem)'?", "Confirm", "YesNo") -eq "Yes") {
-            $jobs = Get-Content $jobFile | ConvertFrom-Json; $jobs.PSObject.Properties.Remove($listBox.SelectedItem)
-            $jobs | ConvertTo-Json | Out-File $jobFile; Unregister-ScheduledTask -TaskName "PBS_Backup_$($listBox.SelectedItem)" -Confirm:$false -ErrorAction SilentlyContinue
+            $jobs = Get-Content $jobFile | ConvertFrom-Json
+            $jobs.PSObject.Properties.Remove($listBox.SelectedItem)
+            $jobs | ConvertTo-Json | Out-File $jobFile
+            Unregister-ScheduledTask -TaskName "PBS_Backup_$($listBox.SelectedItem)" -Confirm:$false -ErrorAction SilentlyContinue
             Update-List 
         }
     }
