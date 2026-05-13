@@ -130,10 +130,14 @@ $btnRun.Add_Click({
     $jName = $listBox.SelectedItem; if(-not $jName){ [System.Windows.Forms.MessageBox]::Show("Please select a job from the list first."); return }
     $jobs = Get-Content $jobFile | ConvertFrom-Json; $job = $jobs.$jName
     
-    # Corrected executable names
     $exe = if($job.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
     $args = "-baseurl `"$($job.url)`" -certfingerprint `"$($job.fp)`" -authid `"$($job.token)`" -secret `"$($job.secret)`" -datastore `"$($job.store)`""
-    if($job.mode -eq "machine"){ foreach($d in $job.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } } }
+    
+    if($job.mode -eq "machine"){ 
+        foreach($d in $job.source.Split(",")){ 
+            if($d.Trim()){ $args += " -backupdev `"$($d.Trim())`"" } 
+        } 
+    }
     else { $args += " -backupdir `"$($job.source)`"" }
     
     $mArgs = Get-MailArgs
@@ -156,10 +160,9 @@ $btnSave.Add_Click({
     } else {
         $selected = @()
         foreach ($item in $checkedListBox.CheckedItems) {
-            if ($item -like "*\\.\PhysicalDrive*") {
-                $parts = $item.Split("()")
-                foreach($p in $parts) { if($p -like "\\.\*") { $selected += $p.Trim() } }
-            }
+            # Find the part that looks like \\.\PhysicalDrive using split instead of regex to avoid escape errors
+            $parts = $item.Split("()")
+            foreach($p in $parts) { if($p.Trim() -like "\\.\PhysicalDrive*") { $selected += $p.Trim() } }
         }
         $src = $selected -join ","
     }
@@ -184,11 +187,16 @@ $btnSave.Add_Click({
     
     $tName = "PBS_Backup_$($txtJobName.Text)"
     if ($chkEnableSched.Checked) {
-        # Corrected executable names
         $exe = if($jobData.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
         $args = "-baseurl `"$($jobData.url)`" -certfingerprint `"$($jobData.fp)`" -authid `"$($jobData.token)`" -secret `"$($jobData.secret)`" -datastore `"$($jobData.store)`""
-        if($jobData.mode -eq "machine"){ foreach($d in $jobData.source.Split(",")){ if($d.Trim()){ $args += " -drive `"$($d.Trim())`"" } } }
+        
+        if($jobData.mode -eq "machine"){ 
+            foreach($d in $jobData.source.Split(",")){ 
+                if($d.Trim()){ $args += " -backupdev `"$($d.Trim())`"" } 
+            } 
+        }
         else { $args += " -backupdir `"$($jobData.source)`"" }
+        
         $mArgs = Get-MailArgs
         if ($mArgs) { $args += " " + ($mArgs -join " ") }
         
