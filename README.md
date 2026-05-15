@@ -25,11 +25,9 @@ A lightweight PowerShell-based Graphical User Interface for the [proxmox-backup-
 
 ## Screenshots
 
-![Folderbackup](https://pics.manuel-maier.net/prv/Folderbackup.jpg) 
+<img width="1480" height="1264" alt="Folderbackup" src="https://github.com/user-attachments/assets/1e3bb685-7f1d-4a24-a453-4fe60dcb2a0e" />
 
-![Maschinebackup](https://pics.manuel-maier.net/prv/Maschinebackup.jpg)
-
-*The interface provides a clean, slate-blue themed dashboard for easy configuration.*
+<img width="1479" height="1489" alt="Maschinebackup" src="https://github.com/user-attachments/assets/ec454af6-bf78-4b7a-a11a-dccded6b54ba" />
 
 ## Credits
 
