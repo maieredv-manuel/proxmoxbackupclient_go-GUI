@@ -30,7 +30,7 @@ if (-not (Test-Path $mailFile)) { [System.IO.File]::WriteAllText($mailFile, "{}"
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Proxmox Backup Client GUI" Height="850" Width="1000" 
+        Title="proxmoxbackupclient_go-GUI" Height="850" Width="1000" 
         Background="#1E1E1E" Foreground="White" WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <Style TargetType="Label">
