@@ -12,6 +12,19 @@ if (-not $isAdmin -or -not $isSTA) {
     exit
 }
 
+Add-Type -AssemblyName PresentationFramework
+
+Add-Type -Name Window -Namespace Console -MemberDefinition '
+[DllImport("Kernel32.dll")]
+public static extern IntPtr GetConsoleWindow();
+
+[DllImport("user32.dll")]
+public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
+'
+
+$consolePtr = [Console.Window]::GetConsoleWindow()
+[Console.Window]::ShowWindow($consolePtr, 0)
+
 # --- 2. Load WPF Assemblies & Setup UTF8 without BOM ---
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
