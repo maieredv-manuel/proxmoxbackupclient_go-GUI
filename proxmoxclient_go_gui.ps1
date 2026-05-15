@@ -1,239 +1,544 @@
-# --- Automatic Admin Restart (Self-Elevation) ---
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    Start-Process powershell.exe -ArgumentList $arguments -Verb RunAs
+# --- 1. Thread & Admin Check (WPF REQUIRES STA-Mode!) ---
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$isSTA = ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA')
+
+if (-not $isAdmin -or -not $isSTA) {
+    $argList = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if (-not $isAdmin) {
+        Start-Process "powershell.exe" -ArgumentList $argList -Verb "RunAs"
+    } else {
+        Start-Process "powershell.exe" -ArgumentList $argList
+    }
     exit
 }
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+# --- 2. Load WPF Assemblies & Setup UTF8 without BOM ---
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
 
-# --- Styling & Colors ---
-$color_bg      = [System.Drawing.Color]::FromArgb(45, 52, 71)
-$color_sidebar = [System.Drawing.Color]::FromArgb(35, 40, 55)
-$color_text    = [System.Drawing.Color]::White
-$color_accent  = [System.Drawing.Color]::FromArgb(0, 120, 215)
-$color_save    = [System.Drawing.Color]::FromArgb(40, 167, 69)
-$color_delete  = [System.Drawing.Color]::FromArgb(220, 53, 69)
-$font_main     = New-Object System.Drawing.Font("Segoe UI", 10)
-$font_bold     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 
-# --- Files & Paths ---
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+# --- 3. Configuration Paths ---
 $jobFile = "$PSScriptRoot\backup_jobs.json"
-if (-not (Test-Path $jobFile)) { "{}" | Out-File $jobFile -Encoding utf8 }
+$mailFile = "$PSScriptRoot\email_settings.json"
+if (-not (Test-Path $jobFile)) { [System.IO.File]::WriteAllText($jobFile, "{}", $utf8NoBom) }
+if (-not (Test-Path $mailFile)) { [System.IO.File]::WriteAllText($mailFile, "{}", $utf8NoBom) }
 
-$mainForm = New-Object System.Windows.Forms.Form
-$mainForm.Text = "proxmoxbackupclient_go-GUI"
-$mainForm.Size = "950, 850"
-$mainForm.StartPosition = "CenterScreen"
-$mainForm.BackColor = $color_bg
-$mainForm.ForeColor = $color_text
+# --- 4. XAML UI Definition ---
+$xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Proxmox Backup Client GUI" Height="850" Width="1000" 
+        Background="#1E1E1E" Foreground="White" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,5,0,0"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#2D2D2D"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="Padding" Value="5"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="ModernBtn" TargetType="Button">
+            <Setter Property="Padding" Value="10"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+    </Window.Resources>
+    
+    <Grid Margin="20">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2*"/>
+            <ColumnDefinition Width="300"/>
+        </Grid.ColumnDefinitions>
+        
+        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="0,0,20,0">
+                <TextBlock Text="Backup Job Configuration" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+                
+                <Label Content="Job Name:"/>
+                <TextBox x:Name="txtJobName" />
 
-# --- Helper Functions ---
+                <GroupBox Header="Backup Type" Foreground="White" Margin="0,15,0,10" Padding="10">
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton x:Name="radioDir" Content="Directory" Foreground="White" Margin="0,0,20,0"/>
+                        <RadioButton x:Name="radioMachine" Content="Machine (Disk)" Foreground="White" />
+                    </StackPanel>
+                </GroupBox>
+
+                <Label x:Name="lblSrc" Content="Source Folder:"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="txtDirSource" Grid.Column="0"/>
+                    <Button x:Name="btnBrowse" Content="..." Grid.Column="1" Width="40" Margin="5,0,0,0" Background="#3F3F46" Foreground="White"/>
+                </Grid>
+                
+                <ListBox x:Name="listDisks" Height="180" Background="#2D2D2D" Foreground="White" BorderBrush="#3F3F46" Padding="5" Visibility="Collapsed" SelectionMode="Multiple"/>
+
+                <Label Content="PBS URL:"/>
+                <TextBox x:Name="txtUrl" />
+                
+                <Label Content="Fingerprint:"/>
+                <TextBox x:Name="txtFp" />
+                
+                <Label Content="Token ID:"/>
+                <TextBox x:Name="txtToken" />
+                
+                <Label Content="Secret:"/>
+                <PasswordBox x:Name="txtSecret" Background="#2D2D2D" Foreground="White" BorderBrush="#3F3F46" Padding="5"/>
+                
+                <Label Content="Datastore:"/>
+                <TextBox x:Name="txtStore" />
+
+                <GroupBox Header="Scheduling" Foreground="White" Margin="0,20,0,10" Padding="10">
+                    <StackPanel>
+                        <CheckBox x:Name="chkEnableSched" Content="Enable scheduled backup" Foreground="White" Margin="0,0,0,10"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Label Content="Time:" Grid.Column="0" Margin="0,0,10,0"/>
+                            <TextBox x:Name="txtTime" Text="02:00" Grid.Column="1"/>
+                            
+                            <Label Content="Interval:" Grid.Column="2" Margin="15,0,10,0"/>
+                            <ComboBox x:Name="cmbInt" Grid.Column="3" Background="#2D2D2D">
+                                <ComboBoxItem Content="Daily" IsSelected="True"/>
+                                <ComboBoxItem Content="Weekly"/>
+                                <ComboBoxItem Content="Hourly"/>
+                            </ComboBox>
+                        </Grid>
+                        <StackPanel x:Name="panelWeekly" Visibility="Collapsed" Margin="0,10,0,0">
+                             <Label Content="Day:"/>
+                             <ComboBox x:Name="cmbDay">
+                                <ComboBoxItem Content="Monday" IsSelected="True"/><ComboBoxItem Content="Tuesday"/><ComboBoxItem Content="Wednesday"/>
+                                <ComboBoxItem Content="Thursday"/><ComboBoxItem Content="Friday"/><ComboBoxItem Content="Saturday"/><ComboBoxItem Content="Sunday"/>
+                             </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <Button x:Name="btnMail" Content="Global Email Configuration" Style="{StaticResource ModernBtn}" Background="#3F3F46" Margin="0,10,0,20"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/> 
+                <RowDefinition Height="*"/> 
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            
+            <TextBlock Text="Saved Jobs" FontSize="16" Margin="0,0,0,10" Grid.Row="0"/>
+            
+            <ListBox x:Name="listBoxJobs" Background="#2D2D2D" Foreground="White" BorderBrush="#3F3F46" Padding="5" Grid.Row="1"/>
+            
+            <StackPanel Grid.Row="2" Margin="0,20,0,0">
+                <Button x:Name="btnNew" Content="NEW JOB (CLEAR)" Style="{StaticResource ModernBtn}" Background="#6C757D" FontWeight="Bold" Margin="0,5"/>
+                <Button x:Name="btnRun" Content="RUN JOB NOW" Style="{StaticResource ModernBtn}" Background="#007ACC" FontWeight="Bold" Margin="0,5"/>
+                <Button x:Name="btnSave" Content="SAVE JOB" Style="{StaticResource ModernBtn}" Background="#28A745" FontWeight="Bold" Margin="0,5"/>
+                <Button x:Name="btnDelete" Content="DELETE JOB" Style="{StaticResource ModernBtn}" Background="#DC3545" Margin="0,5"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
+'@
+
+$Window = [System.Windows.Markup.XamlReader]::Parse($xaml)
+
+# --- 5. Mapping UI Elements ---
+$txtJobName = $Window.FindName("txtJobName")
+$radioDir = $Window.FindName("radioDir")
+$radioMachine = $Window.FindName("radioMachine")
+$txtDirSource = $Window.FindName("txtDirSource")
+$lblSrc = $Window.FindName("lblSrc")
+$listDisks = $Window.FindName("listDisks")
+$btnBrowse = $Window.FindName("btnBrowse")
+$txtUrl = $Window.FindName("txtUrl")
+$txtFp = $Window.FindName("txtFp")
+$txtToken = $Window.FindName("txtToken")
+$txtSecret = $Window.FindName("txtSecret")
+$txtStore = $Window.FindName("txtStore")
+$chkEnableSched = $Window.FindName("chkEnableSched")
+$txtTime = $Window.FindName("txtTime")
+$cmbInt = $Window.FindName("cmbInt")
+$panelWeekly = $Window.FindName("panelWeekly")
+$cmbDay = $Window.FindName("cmbDay")
+$btnMail = $Window.FindName("btnMail")
+$listBoxJobs = $Window.FindName("listBoxJobs")
+$btnNew = $Window.FindName("btnNew")
+$btnRun = $Window.FindName("btnRun")
+$btnSave = $Window.FindName("btnSave")
+$btnDelete = $Window.FindName("btnDelete")
+
+# --- 6. Helper Functions ---
 function Get-PhysicalDisks {
-    return Get-CimInstance Win32_DiskDrive | ForEach-Object {
-        $cleanId = $_.DeviceID -replace "PHYSICALDRIVE", "PhysicalDrive"
-        @{ ID = $cleanId; Name = "Disk $($_.Index): $($_.Model) ($cleanId)" }
+    return Get-CimInstance Win32_DiskDrive | ForEach-Object { 
+        $rawId = $_.DeviceID
+        $fixedId = $rawId.Replace("PHYSICALDRIVE", "PhysicalDrive").Replace("physicaldrive", "PhysicalDrive")
+        [PSCustomObject]@{ ID = $fixedId; Name = "Disk $($_.Index): $($_.Model) ($($fixedId))" } 
     }
 }
 
 function Update-List {
-    $listBox.Items.Clear()
-    if (Test-Path $jobFile) {
-        $content = Get-Content $jobFile -Raw
-        if ($content) {
-            $jobs = $content | ConvertFrom-Json
-            if ($jobs) {
-                foreach ($n in $jobs.psobject.properties.name) { [void]$listBox.Items.Add($n) }
-            }
-        }
+    $listBoxJobs.Items.Clear()
+    $jobsStr = [System.IO.File]::ReadAllText($jobFile)
+    $jobs = $jobsStr | ConvertFrom-Json
+    if ($null -ne $jobs) {
+        foreach ($n in $jobs.psobject.properties.name) { [void]$listBoxJobs.Items.Add($n) }
     }
 }
 
-# --- UI Components ---
-$labelJob = New-Object System.Windows.Forms.Label
-$labelJob.Text = "Backup Job Name"; $labelJob.Location = "30, 25"; $labelJob.AutoSize = $true; $labelJob.Font = $font_bold
-$txtJobName = New-Object System.Windows.Forms.TextBox
-$txtJobName.Location = "30, 50"; $txtJobName.Width = 350
+function Update-ConfigFile {
+    param($jName, $jobData)
+    
+    $configData = [ordered]@{
+        baseurl = $jobData.url
+        certfingerprint = $jobData.fp
+        authid = $jobData.token
+        secret = $jobData.secret
+        datastore = $jobData.store
+    }
 
-$groupMode = New-Object System.Windows.Forms.GroupBox
-$groupMode.Text = "Backup Mode"; $groupMode.Location = "30, 100"; $groupMode.Size = "450,90"; $groupMode.ForeColor = "White"
-$radioDir = New-Object System.Windows.Forms.RadioButton
-$radioDir.Text = "Directory (pbsdirectorybackup.exe)"; $radioDir.Checked = $true; $radioDir.Location = "20,30"; $radioDir.AutoSize = $true
-$radioMachine = New-Object System.Windows.Forms.RadioButton
-$radioMachine.Text = "Machine (pbsmachinebackup.exe)"; $radioMachine.Location = "20,55"; $radioMachine.AutoSize = $true
-$groupMode.Controls.AddRange(@($radioDir, $radioMachine))
+    if ($jobData.mode -eq "machine") {
+        $disks = @($jobData.source.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() })
+        if ($disks.Count -eq 1) { $configData.backupdev = $disks[0] } else { $configData.backupdev = $disks }
+    } else {
+        $configData.backupdir = $jobData.source
+    }
 
-$panelSource = New-Object System.Windows.Forms.Panel
-$panelSource.Location = "30, 210"; $panelSource.Size = "530, 180"
-$lblSrc = New-Object System.Windows.Forms.Label
-$lblSrc.Text = "Source Path:"; $lblSrc.Location = "0, 0"; $lblSrc.AutoSize = $true; $lblSrc.Font = $font_bold
-$txtDirSource = New-Object System.Windows.Forms.TextBox
-$txtDirSource.Location = "0, 25"; $txtDirSource.Width = 400
-
-$btnBrowse = New-Object System.Windows.Forms.Button
-$btnBrowse.Text = "Browse..."; $btnBrowse.Location = "410, 24"; $btnBrowse.Size = "90, 28"; $btnBrowse.FlatStyle = "Flat"; $btnBrowse.BackColor = [System.Drawing.Color]::Gray
-$btnBrowse.Add_Click({
-    $f = New-Object System.Windows.Forms.FolderBrowserDialog
-    if ($f.ShowDialog() -eq "OK") { $txtDirSource.Text = $f.SelectedPath }
-})
-
-$checkedListBox = New-Object System.Windows.Forms.CheckedListBox
-$checkedListBox.Location = "0, 25"; $checkedListBox.Size = "500, 140"; $checkedListBox.Visible = $false; $checkedListBox.BackColor = $color_sidebar; $checkedListBox.ForeColor = "White"
-
-$radioDir.Add_CheckedChanged({ $txtDirSource.Visible = $true; $btnBrowse.Visible = $true; $lblSrc.Text = "Source Path:"; $checkedListBox.Visible = $false })
-$radioMachine.Add_CheckedChanged({ 
-    $txtDirSource.Visible = $false; $btnBrowse.Visible = $false; $lblSrc.Text = "Select Physical Drives:"; $checkedListBox.Visible = $true
-    $checkedListBox.Items.Clear()
-    (Get-PhysicalDisks) | ForEach-Object { [void]$checkedListBox.Items.Add($_.Name) }
-})
-$panelSource.Controls.AddRange(@($lblSrc, $txtDirSource, $btnBrowse, $checkedListBox))
-
-$y = 410
-$fields = @("PBS URL", "Fingerprint", "Token ID", "Secret", "Datastore", "Start Time (HH:mm)")
-$inputs = @{}
-foreach ($f in $fields) {
-    $l = New-Object System.Windows.Forms.Label; $l.Text = "${f}:"; $l.Location = "30, $y"; $l.AutoSize = $true
-    $t = New-Object System.Windows.Forms.TextBox; $t.Location = "180, $y"; $t.Width = 350
-    if ($f -eq "Secret") { $t.PasswordChar = "*" }
-    if ($f -eq "Start Time (HH:mm)") { $t.Text = "02:00"; $t.Width = 80 }
-    $mainForm.Controls.AddRange(@($l, $t)); $inputs[$f] = $t; $y += 35
+    if (Test-Path $mailFile) {
+        $mailStr = [System.IO.File]::ReadAllText($mailFile)
+        $m = $mailStr | ConvertFrom-Json
+        if ($null -ne $m -and -not [string]::IsNullOrWhiteSpace($m.host)) {
+            
+            $smtpObj = [ordered]@{
+                host = $m.host
+                port = $m.port
+                username = $m.user
+                password = $m.pass
+                insecure = [bool]$m.insecure
+                template = [ordered]@{
+                    subject = $m.subject
+                    body = $m.body
+                }
+                mails = @(
+                    [ordered]@{
+                        from = $m.from
+                        to = $m.to
+                    }
+                )
+            }
+            
+            $configData.smtp = $smtpObj
+        }
+    }
+    
+    $configPath = "$PSScriptRoot\config_$($jName).json"
+    
+    $jsonContent = $configData | ConvertTo-Json -Depth 10
+    
+    [System.IO.File]::WriteAllText($configPath, $jsonContent, $utf8NoBom)
+    
+    return $configPath
 }
 
-$lblInterval = New-Object System.Windows.Forms.Label; $lblInterval.Text = "Interval:"; $lblInterval.Location = "30, $y"; $lblInterval.AutoSize = $true
-$comboInterval = New-Object System.Windows.Forms.ComboBox; $comboInterval.Location = "180, $y"; $comboInterval.Width = 150; $comboInterval.DropDownStyle = "DropDownList"
-$comboInterval.Items.AddRange(@("Daily", "Weekly (Mon)", "Hourly"))
-$comboInterval.SelectedIndex = 0
-$mainForm.Controls.AddRange(@($lblInterval, $comboInterval))
-
-# --- Sidebar (Jobs) ---
-$listBox = New-Object System.Windows.Forms.ListBox
-$listBox.Location = "600, 50"; $listBox.Size = "300, 530"; $listBox.BackColor = $color_sidebar; $listBox.ForeColor = "White"
-$listBox.Add_SelectedIndexChanged({
-    $jobName = $listBox.SelectedItem; if (-not $jobName) { return }
-    $jobs = Get-Content $jobFile | ConvertFrom-Json
-    $job = $jobs.$jobName
-    $txtJobName.Text = $jobName
-    $inputs["PBS URL"].Text = $job.url; $inputs["Fingerprint"].Text = $job.fp
-    $inputs["Token ID"].Text = $job.token; $inputs["Secret"].Text = $job.secret
-    $inputs["Datastore"].Text = $job.store
-    $inputs["Start Time (HH:mm)"].Text = $job.time
-    $comboInterval.SelectedItem = $job.interval
-    if ($job.mode -eq "machine") {
-        $radioMachine.Checked = $true
-        for($i=0; $i -lt $checkedListBox.Items.Count; $i++) {
-            $itemText = $checkedListBox.Items[$i]
-            $driveIdInList = ($itemText -split '\(')[-1].Replace(')','')
-            $checkedListBox.SetItemChecked($i, $job.source.Contains($driveIdInList))
-        }
-    } else { $radioDir.Checked = $true; $txtDirSource.Text = $job.source }
+# --- 7. Event Handlers ---
+$radioDir.Add_Checked({
+    $txtDirSource.Visibility = "Visible"
+    $btnBrowse.Visibility = "Visible"
+    $listDisks.Visibility = "Collapsed"
+    $lblSrc.Content = "Source Folder:"
+    $Window.Height = 850
 })
 
-# --- Actions ---
+$radioMachine.Add_Checked({
+    $txtDirSource.Visibility = "Collapsed"
+    $btnBrowse.Visibility = "Collapsed"
+    $listDisks.Visibility = "Visible"
+    $lblSrc.Content = "Select Disks:"
+    
+    $listDisks.Items.Clear()
+    (Get-PhysicalDisks) | ForEach-Object { [void]$listDisks.Items.Add($_.Name) }
+    $Window.Height = 1000
+})
 
-$btnSave = New-Object System.Windows.Forms.Button
-$btnSave.Text = "Save Job"; $btnSave.Location = "30, 680"; $btnSave.Size = "150, 45"; $btnSave.FlatStyle = "Flat"; $btnSave.BackColor = $color_save
+$radioDir.IsChecked = $true
+
+$cmbInt.Add_SelectionChanged({
+    if ($cmbInt.SelectedItem.Content -eq "Weekly") { $panelWeekly.Visibility = "Visible" } else { $panelWeekly.Visibility = "Collapsed" }
+})
+
+$btnBrowse.Add_Click({
+    Add-Type -AssemblyName System.Windows.Forms
+    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+    if ($folderBrowser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $txtDirSource.Text = $folderBrowser.SelectedPath }
+})
+
+$btnNew.Add_Click({
+    $listBoxJobs.SelectedItem = $null
+    $txtJobName.Text = ""
+    $radioDir.IsChecked = $true
+    $txtDirSource.Text = ""
+    $listDisks.UnselectAll()
+    $txtUrl.Text = ""
+    $txtFp.Text = ""
+    $txtToken.Text = ""
+    $txtSecret.Password = ""
+    $txtStore.Text = ""
+    $chkEnableSched.IsChecked = $false
+    $txtTime.Text = "02:00"
+    $cmbInt.SelectedIndex = 0
+    $cmbDay.SelectedIndex = 0
+})
+
 $btnSave.Add_Click({
-    if ([string]::IsNullOrWhiteSpace($txtJobName.Text)) { return }
-    $jobs = Get-Content $jobFile | ConvertFrom-Json
-    if (-not $jobs) { $jobs = New-Object PSObject }
-
+    if (-not $txtJobName.Text) { [System.Windows.MessageBox]::Show("Job name required.") | Out-Null; return }
+    
+    $jobsStr = [System.IO.File]::ReadAllText($jobFile)
+    $jobs = $jobsStr | ConvertFrom-Json
+    if ($null -eq $jobs) { $jobs = New-Object PSObject }
+    
+    $modeVal = if($radioDir.IsChecked){"dir"}else{"machine"}
     $src = ""
-    if($radioDir.Checked) { $src = $txtDirSource.Text } 
-    else { 
+    if($radioDir.IsChecked){ $src = $txtDirSource.Text } else {
         $selected = @()
-        foreach ($item in $checkedListBox.CheckedItems) {
-            $path = ($item -split '\(')[-1].Replace(')','')
-            $selected += $path -replace "PHYSICALDRIVE", "PhysicalDrive"
+        foreach ($item in $listDisks.SelectedItems) {
+            if ($item -match '\(([^)]+)\)') { $selected += $matches[1].Replace("PHYSICALDRIVE", "PhysicalDrive") }
         }
         $src = $selected -join ","
     }
-    
-    $jobData = [PSCustomObject]@{
-        mode     = if($radioDir.Checked){"directory"}else{"machine"}
-        source   = $src
-        url      = $inputs["PBS URL"].Text
-        fp       = $inputs["Fingerprint"].Text
-        token    = $inputs["Token ID"].Text
-        secret   = $inputs["Secret"].Text
-        store    = $inputs["Datastore"].Text
-        time     = $inputs["Start Time (HH:mm)"].Text
-        interval = $comboInterval.SelectedItem
+
+    $jobData = @{ 
+        mode=$modeVal; source=$src; url=$txtUrl.Text; fp=$txtFp.Text; 
+        token=$txtToken.Text; secret=$txtSecret.Password; store=$txtStore.Text; 
+        sched=$chkEnableSched.IsChecked; time=$txtTime.Text; 
+        interval=$cmbInt.Text; day=$cmbDay.Text 
     }
-    
+
     if ($jobs.PSObject.Properties[$txtJobName.Text]) { $jobs.PSObject.Properties.Remove($txtJobName.Text) }
-    $jobs.PSObject.Properties.Add((New-Object System.Management.Automation.PSNoteProperty($txtJobName.Text, $jobData)))
-    $jobs | ConvertTo-Json -Depth 10 | Out-File $jobFile -Encoding utf8
-    Update-List
-    [System.Windows.Forms.MessageBox]::Show("Job saved successfully.")
-})
-
-$btnRun = New-Object System.Windows.Forms.Button
-$btnRun.Text = "Run Backup Now"; $btnRun.Location = "310, 680"; $btnRun.Size = "220, 45"; $btnRun.FlatStyle = "Flat"; $btnRun.BackColor = $color_accent
-$btnRun.Add_Click({
-    $jobName = $listBox.SelectedItem; if (-not $jobName) { return }
-    $jobs = Get-Content $jobFile | ConvertFrom-Json; $job = $jobs.$jobName
+    $jobs | Add-Member -MemberType NoteProperty -Name $txtJobName.Text -Value $jobData -Force
     
-    if ($job.mode -eq "machine") { 
-        $exe = "$PSScriptRoot\pbsmachinebackup.exe"
-        $argString = "-baseurl `"$($job.url)`" -certfingerprint `"$($job.fp)`" -authid `"$($job.token)`" -secret `"$($job.secret)`" -datastore `"$($job.store)`""
-        foreach ($d in $job.source.Split(",")) {
-            $argString += " -backupdev $($d.Trim())"
+    $jobsJson = $jobs | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($jobFile, $jobsJson, $utf8NoBom)
+    
+    $configPath = Update-ConfigFile -jName $txtJobName.Text -jobData $jobData
+    
+    $tName = "PBS_Backup_$($txtJobName.Text)"
+    if ($chkEnableSched.IsChecked) {
+        $exe = if($modeVal -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
+        $action = New-ScheduledTaskAction -Execute "$PSScriptRoot\$exe" -Argument "-config `"$configPath`"" -WorkingDirectory $PSScriptRoot
+        $startTime = Get-Date $txtTime.Text
+        switch ($cmbInt.Text) {
+            "Daily" { $trigger = New-ScheduledTaskTrigger -Daily -At $startTime }
+            "Weekly" { $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $cmbDay.Text -At $startTime }
+            "Hourly" { $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date); $trigger.Repetition = (New-ScheduledTaskSettingsSet -RepeatInterval (New-TimeSpan -Hours 1)).Repetition }
         }
-        Start-Process $exe -ArgumentList $argString -Wait
-    } else { 
-        $exe = "$PSScriptRoot\pbsdirectorybackup.exe"
-        $args = @("-baseurl", $job.url, "-certfingerprint", $job.fp, "-authid", $job.token, "-secret", $job.secret, "-datastore", $job.store, "-backupdir", $job.source)
-        Start-Process $exe -ArgumentList $args -Wait
-    }
-})
-
-$btnSchedule = New-Object System.Windows.Forms.Button
-$btnSchedule.Text = "Automate in Task Scheduler"; $btnSchedule.Location = "30, 740"; $btnSchedule.Size = "500, 45"; $btnSchedule.FlatStyle = "Flat"; $btnSchedule.BackColor = [System.Drawing.Color]::DimGray
-$btnSchedule.Add_Click({
-    $jobName = $listBox.SelectedItem; if (-not $jobName) { return }
-    $jobs = Get-Content $jobFile | ConvertFrom-Json; $job = $jobs.$jobName
-    
-    $exe = if($job.mode -eq "machine") { "$PSScriptRoot\pbsmachinebackup.exe" } else { "$PSScriptRoot\pbsdirectorybackup.exe" }
-    $args = "-baseurl `"$($job.url)`" -certfingerprint `"$($job.fp)`" -authid `"$($job.token)`" -secret `"$($job.secret)`" -datastore `"$($job.store)`""
-    
-    if ($job.mode -eq "machine") {
-        foreach ($d in $job.source.Split(",")) { $args += " -backupdev $($d.Trim())" }
+        Register-ScheduledTask -TaskName $tName -Action $action -Trigger $trigger -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest) -Force
     } else {
-        $args += " -backupdir `"$($job.source)`""
+        Unregister-ScheduledTask -TaskName $tName -Confirm:$false -ErrorAction SilentlyContinue
     }
-    
-    $action = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory $PSScriptRoot
-    $startTime = Get-Date $job.time
-    
-    switch ($job.interval) {
-        "Daily" { $trigger = New-ScheduledTaskTrigger -Daily -At $startTime }
-        "Weekly (Mon)" { $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $startTime }
-        "Hourly" { 
-            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date)
-            $trigger.Repetition = (New-ScheduledTaskSettingsSet -RepeatInterval (New-TimeSpan -Hours 1)).Repetition 
-        }
-    }
-    
-    Register-ScheduledTask -TaskName "PBS_Backup_$jobName" -Action $action -Trigger $trigger -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest) -Force
-    [System.Windows.Forms.MessageBox]::Show("Job successfully added to Task Scheduler.")
+    Update-List
+    [System.Windows.MessageBox]::Show("Job saved & Config JSON generated.") | Out-Null
 })
 
-$btnDelete = New-Object System.Windows.Forms.Button
-$btnDelete.Text = "Delete"; $btnDelete.Location = "190, 680"; $btnDelete.Size = "100, 45"; $btnDelete.FlatStyle = "Flat"; $btnDelete.BackColor = $color_delete
+$btnRun.Add_Click({
+    $jName = $listBoxJobs.SelectedItem; if(-not $jName){ [System.Windows.MessageBox]::Show("Select job first.") | Out-Null; return }
+    $jobsStr = [System.IO.File]::ReadAllText($jobFile)
+    $jobs = $jobsStr | ConvertFrom-Json; $job = $jobs.$jName
+    $exe = if($job.mode -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
+    
+    $configPath = "$PSScriptRoot\config_$($jName).json"
+    if (-not (Test-Path $configPath)) {
+        [System.Windows.MessageBox]::Show("Config not found. Please click 'SAVE JOB' once to generate it.") | Out-Null
+        return
+    }
+    
+    Start-Process "powershell.exe" -ArgumentList "-NoExit -Command `"& '$PSScriptRoot\$exe' -config '$configPath'`""
+})
+
 $btnDelete.Add_Click({
-    $jobName = $listBox.SelectedItem; if (-not $jobName) { return }
-    $jobs = Get-Content $jobFile | ConvertFrom-Json
-    if ([System.Windows.Forms.MessageBox]::Show("Are you sure you want to delete job '$jobName'?", "Confirm", "YesNo") -eq "Yes") {
-        $jobs.PSObject.Properties.Remove($jobName)
-        $jobs | ConvertTo-Json | Out-File $jobFile -Encoding utf8
-        if (Get-ScheduledTask -TaskName "PBS_Backup_$jobName" -ErrorAction SilentlyContinue) { 
-            Unregister-ScheduledTask -TaskName "PBS_Backup_$jobName" -Confirm:$false 
+    if($listBoxJobs.SelectedItem){ 
+        if ([System.Windows.MessageBox]::Show("Delete '$($listBoxJobs.SelectedItem)'?", "Confirm", "YesNo") -eq "Yes") {
+            $jobsStr = [System.IO.File]::ReadAllText($jobFile)
+            $jobs = $jobsStr | ConvertFrom-Json
+            $jobs.PSObject.Properties.Remove($listBoxJobs.SelectedItem)
+            
+            $jobsJson = $jobs | ConvertTo-Json -Depth 5
+            [System.IO.File]::WriteAllText($jobFile, $jobsJson, $utf8NoBom)
+            
+            Unregister-ScheduledTask -TaskName "PBS_Backup_$($listBoxJobs.SelectedItem)" -Confirm:$false -ErrorAction SilentlyContinue
+            Update-List 
+            
+            $configPath = "$PSScriptRoot\config_$($listBoxJobs.SelectedItem).json"
+            if (Test-Path $configPath) { Remove-Item $configPath -Force }
+            
+            $btnNew.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
         }
-        Update-List
     }
 })
 
-$mainForm.Controls.AddRange(@($labelJob, $txtJobName, $groupMode, $panelSource, $btnSave, $btnDelete, $btnRun, $btnSchedule, $listBox))
+$listBoxJobs.Add_SelectionChanged({
+    $jName = $listBoxJobs.SelectedItem; if(-not $jName){return}
+    $jobsStr = [System.IO.File]::ReadAllText($jobFile)
+    $j = ($jobsStr | ConvertFrom-Json).$jName
+    $txtJobName.Text = $jName; $txtUrl.Text = $j.url; $txtFp.Text = $j.fp; $txtToken.Text = $j.token; $txtSecret.Password = $j.secret; $txtStore.Text = $j.store
+    $chkEnableSched.IsChecked = $j.sched; $txtTime.Text = $j.time
+    
+    if ($j.interval) {
+        foreach ($item in $cmbInt.Items) { if ($item.Content -eq $j.interval) { $cmbInt.SelectedItem = $item; break } }
+    }
+    if ($j.day) {
+        foreach ($item in $cmbDay.Items) { if ($item.Content -eq $j.day) { $cmbDay.SelectedItem = $item; break } }
+    }
+    
+    if($j.mode -eq "machine"){$radioMachine.IsChecked = $true}else{$radioDir.IsChecked = $true; $txtDirSource.Text = $j.source}
+})
+
+$btnMail.Add_Click({
+    $mailXaml = @'
+    <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+            Title="Global Email Settings" Height="680" Width="450" 
+            Background="#1E1E1E" Foreground="White" WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
+        <Window.Resources>
+            <Style TargetType="Label">
+                <Setter Property="Foreground" Value="#CCCCCC"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Margin" Value="0,5,0,0"/>
+            </Style>
+            <Style TargetType="TextBox">
+                <Setter Property="Background" Value="#2D2D2D"/>
+                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="BorderBrush" Value="#3F3F46"/>
+                <Setter Property="Padding" Value="5"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+            </Style>
+            <Style TargetType="PasswordBox">
+                <Setter Property="Background" Value="#2D2D2D"/>
+                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="BorderBrush" Value="#3F3F46"/>
+                <Setter Property="Padding" Value="5"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+            </Style>
+        </Window.Resources>
+        
+        <Grid Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            
+            <StackPanel Grid.Row="0">
+                <TextBlock Text="SMTP Configuration" FontSize="18" FontWeight="Bold" Margin="0,0,0,15"/>
+                
+                <Label Content="Host (Server):"/>
+                <TextBox x:Name="txtMHost" />
+                
+                <Label Content="Port:"/>
+                <TextBox x:Name="txtMPort" />
+                
+                <Label Content="Username:"/>
+                <TextBox x:Name="txtMUser" />
+                
+                <Label Content="Password:"/>
+                <PasswordBox x:Name="txtMPass" />
+                
+                <Label Content="From Address:"/>
+                <TextBox x:Name="txtMFrom" />
+                
+                <Label Content="To Address:"/>
+                <TextBox x:Name="txtMTo" />
+                
+                <Label Content="Subject Template:"/>
+                <TextBox x:Name="txtMSubject" />
+                
+                <Label Content="Body Template:"/>
+                <TextBox x:Name="txtMBody" Height="60" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                
+                <CheckBox x:Name="chkMInsecure" Content="Allow Insecure TLS" Foreground="White" Margin="0,15,0,0"/>
+            </StackPanel>
+            
+            <Button x:Name="btnSaveMail" Grid.Row="1" Content="SAVE EMAIL SETTINGS" Background="#28A745" Foreground="White" FontWeight="Bold" Padding="10" BorderThickness="0" Margin="0,15,0,0" Cursor="Hand"/>
+        </Grid>
+    </Window>
+'@
+    
+    $MailWindow = [System.Windows.Markup.XamlReader]::Parse($mailXaml)
+    
+    $txtMHost = $MailWindow.FindName("txtMHost")
+    $txtMPort = $MailWindow.FindName("txtMPort")
+    $txtMUser = $MailWindow.FindName("txtMUser")
+    $txtMPass = $MailWindow.FindName("txtMPass")
+    $txtMFrom = $MailWindow.FindName("txtMFrom")
+    $txtMTo = $MailWindow.FindName("txtMTo")
+    $txtMSubject = $MailWindow.FindName("txtMSubject")
+    $txtMBody = $MailWindow.FindName("txtMBody")
+    $chkMInsecure = $MailWindow.FindName("chkMInsecure")
+    $btnSaveMail = $MailWindow.FindName("btnSaveMail")
+    
+    if (Test-Path $mailFile) {
+        $mailStr = [System.IO.File]::ReadAllText($mailFile)
+        $m = $mailStr | ConvertFrom-Json
+        if ($null -ne $m -and $null -ne $m.host) {
+            $txtMHost.Text = $m.host
+            $txtMPort.Text = $m.port
+            $txtMUser.Text = $m.user
+            $txtMPass.Password = $m.pass
+            $txtMFrom.Text = $m.from
+            $txtMTo.Text = $m.to
+            $txtMSubject.Text = $m.subject
+            $txtMBody.Text = $m.body
+            if ($m.insecure) { $chkMInsecure.IsChecked = $true }
+        }
+    }
+    
+    $btnSaveMail.Add_Click({
+        $mailData = @{
+            host = $txtMHost.Text
+            port = $txtMPort.Text
+            user = $txtMUser.Text
+            pass = $txtMPass.Password
+            from = $txtMFrom.Text
+            to = $txtMTo.Text
+            subject = $txtMSubject.Text
+            body = $txtMBody.Text
+            insecure = [bool]$chkMInsecure.IsChecked
+        }
+        $mailJson = $mailData | ConvertTo-Json -Depth 5
+        [System.IO.File]::WriteAllText($mailFile, $mailJson, $utf8NoBom)
+        
+        if (Test-Path $jobFile) {
+            $allJobsStr = [System.IO.File]::ReadAllText($jobFile)
+            if (-not [string]::IsNullOrWhiteSpace($allJobsStr)) {
+                $allJobs = $allJobsStr | ConvertFrom-Json
+                if ($null -ne $allJobs) {
+                    foreach ($prop in $allJobs.psobject.properties) {
+                        Update-ConfigFile -jName $prop.Name -jobData $prop.Value | Out-Null
+                    }
+                }
+            }
+        }
+        
+        [System.Windows.MessageBox]::Show("Email Settings Saved & All Configs Updated!") | Out-Null
+        $MailWindow.Close()
+    })
+    
+    $MailWindow.Owner = $Window
+    $MailWindow.ShowDialog() | Out-Null
+})
+
 Update-List
-$mainForm.ShowDialog()
+$Window.ShowDialog() | Out-Null
