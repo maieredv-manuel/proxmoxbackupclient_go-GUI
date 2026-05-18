@@ -9,6 +9,7 @@ A lightweight PowerShell-based Graphical User Interface for the [proxmox-backup-
 - **Auto-Elevation:** Automatically requests Administrator privileges required for VSS snapshots and disk access.
 - **Physical Drive Mapping:** Automatically detects and correctly formats physical drive paths (e.g., `\\.\PhysicalDrive0`) to avoid common CLI syntax errors.
 - **Job Management:** Save, edit, and delete multiple backup configurations in a local `backup_jobs.json` file.
+- **Global Email Configuration:** Configure SMTP settings once and apply them seamlessly to all backup jobs for status notifications.
 
 ## Prerequisites
 
@@ -21,7 +22,11 @@ A lightweight PowerShell-based Graphical User Interface for the [proxmox-backup-
 2. Right-click the script and select **Run with PowerShell**.
 3. Fill in your PBS details (URL, Fingerprint, Token, Secret).
 4. Select **Directory** or **Machine** mode and choose your source.
-5. Click **Save Job**, then either **Run Backup Now** to test or **Automate in Task Scheduler** for recurring backups.
+5. Click **Save Job**, then either **RUN JOB NOW** to test or check **Enable scheduled backup** for recurring tasks.
+
+## Known Issues / Limitations
+
+- **VM Backup Mode (`-type vm`):** Checking the "Mark as VM" option in the GUI currently causes upload errors on the Proxmox Backup Server. This is due to a known bug / incomplete implementation in the underlying `pbsmachinebackup.exe` CLI tool. It is highly recommended to **leave this unchecked**. Unchecked machine backups will successfully upload standard `.img` bare-metal images, which can still be used for disaster recovery or manual VM imports.
 
 ## Screenshots
 
