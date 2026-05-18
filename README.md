@@ -27,6 +27,7 @@ A lightweight PowerShell-based Graphical User Interface for the [proxmox-backup-
 ## Known Issues / Limitations
 
 - **VM Backup Mode (`-type vm`):** Checking the "Mark as VM" option in the GUI currently causes upload errors on the Proxmox Backup Server. This is due to a known bug / incomplete implementation in the underlying `pbsmachinebackup.exe` CLI tool. It is highly recommended to **leave this unchecked**. Unchecked machine backups will successfully upload standard `.img` bare-metal images, which can still be used for disaster recovery or manual VM imports.
+- **Send Emails in Machine Backup Mode does not work:** Sending Emails in Directory Mode works fine, but not not in Machine Backup.
 
 ## Screenshots
 
