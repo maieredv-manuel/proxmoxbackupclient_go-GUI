@@ -81,7 +81,8 @@ $xaml = @'
                 <GroupBox Header="Backup Type" Foreground="White" Margin="0,15,0,10" Padding="10">
                     <StackPanel Orientation="Horizontal">
                         <RadioButton x:Name="radioDir" Content="Directory" Foreground="White" Margin="0,0,20,0"/>
-                        <RadioButton x:Name="radioMachine" Content="Machine (Disk)" Foreground="White" />
+                        <RadioButton x:Name="radioMachine" Content="Machine (Disk)" Foreground="White" Margin="0,0,15,0"/>
+                        <CheckBox x:Name="chkIsVM" Content="Mark as VM (-type vm)" Foreground="#007ACC" VerticalAlignment="Center" Visibility="Collapsed"/>
                     </StackPanel>
                 </GroupBox>
 
@@ -174,6 +175,7 @@ $Window = [System.Windows.Markup.XamlReader]::Parse($xaml)
 $txtJobName = $Window.FindName("txtJobName")
 $radioDir = $Window.FindName("radioDir")
 $radioMachine = $Window.FindName("radioMachine")
+$chkIsVM = $Window.FindName("chkIsVM")
 $txtDirSource = $Window.FindName("txtDirSource")
 $lblSrc = $Window.FindName("lblSrc")
 $listDisks = $Window.FindName("listDisks")
@@ -216,8 +218,6 @@ function Update-List {
 function Update-ConfigFile {
     param($jName, $jobData)
     
-    # HYBRID-LÖSUNG: Wir speichern hier NUR NOCH die statischen Daten.
-    # backupdir und backupdev fliegen hier komplett raus!
     $configData = [ordered]@{
         baseurl = $jobData.url
         certfingerprint = $jobData.fp
@@ -264,6 +264,7 @@ $radioDir.Add_Checked({
     $txtDirSource.Visibility = "Visible"
     $btnBrowse.Visibility = "Visible"
     $listDisks.Visibility = "Collapsed"
+    $chkIsVM.Visibility = "Collapsed"
     $lblSrc.Content = "Source Folder:"
     $Window.Height = 850
 })
@@ -272,6 +273,7 @@ $radioMachine.Add_Checked({
     $txtDirSource.Visibility = "Collapsed"
     $btnBrowse.Visibility = "Collapsed"
     $listDisks.Visibility = "Visible"
+    $chkIsVM.Visibility = "Visible"
     $lblSrc.Content = "Select Disks:"
     
     $listDisks.Items.Clear()
@@ -297,6 +299,7 @@ $btnNew.Add_Click({
     $radioDir.IsChecked = $true
     $txtDirSource.Text = ""
     $listDisks.UnselectAll()
+    $chkIsVM.IsChecked = $false
     $txtUrl.Text = ""
     $txtFp.Text = ""
     $txtToken.Text = ""
@@ -329,7 +332,7 @@ $btnSave.Add_Click({
         mode=$modeVal; source=$src; url=$txtUrl.Text; fp=$txtFp.Text; 
         token=$txtToken.Text; secret=$txtSecret.Password; store=$txtStore.Text; 
         sched=$chkEnableSched.IsChecked; time=$txtTime.Text; 
-        interval=$cmbInt.Text; day=$cmbDay.Text 
+        interval=$cmbInt.Text; day=$cmbDay.Text; isVM=[bool]$chkIsVM.IsChecked
     }
 
     if ($jobs.PSObject.Properties[$txtJobName.Text]) { $jobs.PSObject.Properties.Remove($txtJobName.Text) }
@@ -338,7 +341,6 @@ $btnSave.Add_Click({
     $jobsJson = $jobs | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($jobFile, $jobsJson, $utf8NoBom)
     
-    # Generiert die Config-Datei (jetzt ohne Drives!)
     $configPath = Update-ConfigFile -jName $txtJobName.Text -jobData $jobData
     
     $tName = "PBS_Backup_$($txtJobName.Text)"
@@ -349,6 +351,7 @@ $btnSave.Add_Click({
         $argsList = "-config `"$configPath`""
         
         if($modeVal -eq "machine"){
+            if ($jobData.isVM) { $argsList += " -type vm" }
             foreach($d in $src.Split(",")){
                 if($d.Trim()){ $argsList += " -backupdev `"$($d.Trim())`"" }
             }
@@ -387,6 +390,7 @@ $btnRun.Add_Click({
     $argsList = "-config `"$configPath`""
     
     if($job.mode -eq "machine"){
+        if ($job.isVM) { $argsList += " -type vm" }
         foreach($d in $job.source.Split(",")){
             if($d.Trim()){ $argsList += " -backupdev `"$($d.Trim())`"" }
         }
@@ -434,6 +438,8 @@ $listBoxJobs.Add_SelectionChanged({
     
     if($j.mode -eq "machine"){
         $radioMachine.IsChecked = $true
+        $chkIsVM.IsChecked = [bool]$j.isVM
+        
         $listDisks.UnselectAll()
         $savedDisks = $j.source.Split(",")
         for ($i = 0; $i -lt $listDisks.Items.Count; $i++) {
@@ -444,7 +450,7 @@ $listBoxJobs.Add_SelectionChanged({
             }
         }
     } else {
-        $radioDir.IsChecked = $true; $txtDirSource.Text = $j.source
+        $radioDir.IsChecked = $true; $txtDirSource.Text = $j.source; $chkIsVM.IsChecked = $false
     }
 })
 
