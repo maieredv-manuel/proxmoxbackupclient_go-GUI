@@ -216,27 +216,14 @@ function Update-List {
 function Update-ConfigFile {
     param($jName, $jobData)
     
+    # HYBRID-LÖSUNG: Wir speichern hier NUR NOCH die statischen Daten.
+    # backupdir und backupdev fliegen hier komplett raus!
     $configData = [ordered]@{
         baseurl = $jobData.url
         certfingerprint = $jobData.fp
         authid = $jobData.token
         secret = $jobData.secret
         datastore = $jobData.store
-    }
-
-    if ($jobData.mode -eq "machine") {
-        # ULTIMATER FIX FÜR POWERSHELL JSON FLATTENING
-        $disksArray = @($jobData.source.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() })
-        
-        if ($disksArray.Count -eq 1) {
-            # Bei nur 1 Festplatte MÜSSEN wir das Array verdoppeln (,@), sonst macht PS einen String draus!
-            $configData.backupdev = ,@($disksArray[0])
-        } elseif ($disksArray.Count -gt 1) {
-            # Bei mehr als 1 Festplatte funktioniert es normal
-            $configData.backupdev = $disksArray
-        }
-    } else {
-        $configData.backupdir = $jobData.source
     }
 
     if (Test-Path $mailFile) {
@@ -261,7 +248,6 @@ function Update-ConfigFile {
                     }
                 )
             }
-            
             $configData.smtp = $smtpObj
         }
     }
@@ -352,13 +338,25 @@ $btnSave.Add_Click({
     $jobsJson = $jobs | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($jobFile, $jobsJson, $utf8NoBom)
     
-    # Hier wird die neue Funktion aufgerufen!
+    # Generiert die Config-Datei (jetzt ohne Drives!)
     $configPath = Update-ConfigFile -jName $txtJobName.Text -jobData $jobData
     
     $tName = "PBS_Backup_$($txtJobName.Text)"
     if ($chkEnableSched.IsChecked) {
         $exe = if($modeVal -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
-        $action = New-ScheduledTaskAction -Execute "$PSScriptRoot\$exe" -Argument "-config `"$configPath`"" -WorkingDirectory $PSScriptRoot
+        
+        # --- HYBRID ARGUMENT BUILDER ---
+        $argsList = "-config `"$configPath`""
+        
+        if($modeVal -eq "machine"){
+            foreach($d in $src.Split(",")){
+                if($d.Trim()){ $argsList += " -backupdev `"$($d.Trim())`"" }
+            }
+        } else {
+            $argsList += " -backupdir `"$($src)`""
+        }
+        
+        $action = New-ScheduledTaskAction -Execute "$PSScriptRoot\$exe" -Argument $argsList -WorkingDirectory $PSScriptRoot
         $startTime = Get-Date $txtTime.Text
         switch ($cmbInt.Text) {
             "Daily" { $trigger = New-ScheduledTaskTrigger -Daily -At $startTime }
@@ -370,7 +368,7 @@ $btnSave.Add_Click({
         Unregister-ScheduledTask -TaskName $tName -Confirm:$false -ErrorAction SilentlyContinue
     }
     Update-List
-    [System.Windows.MessageBox]::Show("Job saved & Config JSON generated.") | Out-Null
+    [System.Windows.MessageBox]::Show("Job saved, Config generated & Task synchronized.") | Out-Null
 })
 
 $btnRun.Add_Click({
@@ -385,7 +383,18 @@ $btnRun.Add_Click({
         return
     }
     
-    Start-Process "powershell.exe" -ArgumentList "-NoExit -Command `"& '$PSScriptRoot\$exe' -config '$configPath'`""
+    # --- HYBRID ARGUMENT BUILDER ---
+    $argsList = "-config `"$configPath`""
+    
+    if($job.mode -eq "machine"){
+        foreach($d in $job.source.Split(",")){
+            if($d.Trim()){ $argsList += " -backupdev `"$($d.Trim())`"" }
+        }
+    } else {
+        $argsList += " -backupdir `"$($job.source)`""
+    }
+    
+    Start-Process "powershell.exe" -ArgumentList "-NoExit -Command `"& '$PSScriptRoot\$exe' $argsList`""
 })
 
 $btnDelete.Add_Click({
