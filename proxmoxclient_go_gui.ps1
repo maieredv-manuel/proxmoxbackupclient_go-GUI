@@ -30,7 +30,6 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 
-
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 # --- 3. Configuration Paths ---
@@ -226,8 +225,9 @@ function Update-ConfigFile {
     }
 
     if ($jobData.mode -eq "machine") {
+        # FIX: backupdev MUSS im JSON immer ein Array sein, selbst bei nur 1 Festplatte!
         $disks = @($jobData.source.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() })
-        if ($disks.Count -eq 1) { $configData.backupdev = $disks[0] } else { $configData.backupdev = $disks }
+        $configData.backupdev = ,$disks  # Das Komma erzwingt ein String-Array im JSON
     } else {
         $configData.backupdir = $jobData.source
     }
@@ -260,9 +260,7 @@ function Update-ConfigFile {
     }
     
     $configPath = "$PSScriptRoot\config_$($jName).json"
-    
     $jsonContent = $configData | ConvertTo-Json -Depth 10
-    
     [System.IO.File]::WriteAllText($configPath, $jsonContent, $utf8NoBom)
     
     return $configPath
@@ -417,7 +415,21 @@ $listBoxJobs.Add_SelectionChanged({
         foreach ($item in $cmbDay.Items) { if ($item.Content -eq $j.day) { $cmbDay.SelectedItem = $item; break } }
     }
     
-    if($j.mode -eq "machine"){$radioMachine.IsChecked = $true}else{$radioDir.IsChecked = $true; $txtDirSource.Text = $j.source}
+    if($j.mode -eq "machine"){
+        $radioMachine.IsChecked = $true
+        # FIX: Gefundene Disks beim Anklicken eines bestehenden Jobs in der WPF-Oberfläche wieder markieren
+        $listDisks.UnselectAll()
+        $savedDisks = $j.source.Split(",")
+        for ($i = 0; $i -lt $listDisks.Items.Count; $i++) {
+            foreach ($sd in $savedDisks) {
+                if ($listDisks.Items[$i] -like "*$($sd.Trim())*") {
+                    [void]$listDisks.SelectedItems.Add($listDisks.Items[$i])
+                }
+            }
+        }
+    } else {
+        $radioDir.IsChecked = $true; $txtDirSource.Text = $j.source
+    }
 })
 
 $btnMail.Add_Click({
