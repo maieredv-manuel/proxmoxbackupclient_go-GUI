@@ -225,9 +225,14 @@ function Update-ConfigFile {
     }
 
     if ($jobData.mode -eq "machine") {
-        # FIX: backupdev MUSS im JSON immer ein Array sein, selbst bei nur 1 Festplatte!
-        $disks = @($jobData.source.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() })
-        $configData.backupdev = ,$disks  # Das Komma erzwingt ein String-Array im JSON
+        # FIX: Verwendung einer expliziten ArrayList. Das zwingt ConvertTo-Json JEDERZEIT dazu, ein JSON-Array [] zu schreiben, selbst bei 1 Element!
+        $disksList = New-Object System.Collections.ArrayList
+        if (![string]::IsNullOrWhiteSpace($jobData.source)) {
+            foreach ($d in $jobData.source.Split(",")) {
+                if (![string]::IsNullOrWhiteSpace($d)) { [void]$disksList.Add($d.Trim()) }
+            }
+        }
+        $configData.backupdev = $disksList
     } else {
         $configData.backupdir = $jobData.source
     }
@@ -417,7 +422,6 @@ $listBoxJobs.Add_SelectionChanged({
     
     if($j.mode -eq "machine"){
         $radioMachine.IsChecked = $true
-        # FIX: Gefundene Disks beim Anklicken eines bestehenden Jobs in der WPF-Oberfläche wieder markieren
         $listDisks.UnselectAll()
         $savedDisks = $j.source.Split(",")
         for ($i = 0; $i -lt $listDisks.Items.Count; $i++) {
