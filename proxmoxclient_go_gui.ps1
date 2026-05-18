@@ -225,14 +225,16 @@ function Update-ConfigFile {
     }
 
     if ($jobData.mode -eq "machine") {
-        # FIX: Verwendung einer expliziten ArrayList. Das zwingt ConvertTo-Json JEDERZEIT dazu, ein JSON-Array [] zu schreiben, selbst bei 1 Element!
-        $disksList = New-Object System.Collections.ArrayList
-        if (![string]::IsNullOrWhiteSpace($jobData.source)) {
-            foreach ($d in $jobData.source.Split(",")) {
-                if (![string]::IsNullOrWhiteSpace($d)) { [void]$disksList.Add($d.Trim()) }
-            }
+        # ULTIMATER FIX FÜR POWERSHELL JSON FLATTENING
+        $disksArray = @($jobData.source.Split(",", [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() })
+        
+        if ($disksArray.Count -eq 1) {
+            # Bei nur 1 Festplatte MÜSSEN wir das Array verdoppeln (,@), sonst macht PS einen String draus!
+            $configData.backupdev = ,@($disksArray[0])
+        } elseif ($disksArray.Count -gt 1) {
+            # Bei mehr als 1 Festplatte funktioniert es normal
+            $configData.backupdev = $disksArray
         }
-        $configData.backupdev = $disksList
     } else {
         $configData.backupdir = $jobData.source
     }
@@ -350,6 +352,7 @@ $btnSave.Add_Click({
     $jobsJson = $jobs | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($jobFile, $jobsJson, $utf8NoBom)
     
+    # Hier wird die neue Funktion aufgerufen!
     $configPath = Update-ConfigFile -jName $txtJobName.Text -jobData $jobData
     
     $tName = "PBS_Backup_$($txtJobName.Text)"
