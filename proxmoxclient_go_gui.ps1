@@ -25,7 +25,7 @@ public static extern bool ShowWindow(IntPtr hWnd, Int32 nCmdShow);
 $consolePtr = [Console.Window]::GetConsoleWindow()
 [Console.Window]::ShowWindow($consolePtr, 0)
 
-# --- 2. Load WPF Assemblies & Setup UTF8 without BOM ---
+# --- 2. Load WPF Assemblies & Setup UTF8 WITHOUT BOM (Go-Lang requires NO BOM!) ---
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -231,9 +231,10 @@ function Update-ConfigFile {
         $m = $mailStr | ConvertFrom-Json
         if ($null -ne $m -and -not [string]::IsNullOrWhiteSpace($m.host)) {
             
+            # Die SMTP Struktur GENAU so, wie das Go-Tool sie verlangt!
             $smtpObj = [ordered]@{
                 host = $m.host
-                port = $m.port
+                port = [string]$m.port
                 username = $m.user
                 password = $m.pass
                 insecure = [bool]$m.insecure
@@ -254,6 +255,8 @@ function Update-ConfigFile {
     
     $configPath = "$PSScriptRoot\config_$($jName).json"
     $jsonContent = $configData | ConvertTo-Json -Depth 10
+    
+    # Speichern OHNE BOM, damit Go nicht abstürzt!
     [System.IO.File]::WriteAllText($configPath, $jsonContent, $utf8NoBom)
     
     return $configPath
@@ -347,7 +350,6 @@ $btnSave.Add_Click({
     if ($chkEnableSched.IsChecked) {
         $exe = if($modeVal -eq "machine"){"pbsmachinebackup.exe"}else{"pbsdirectorybackup.exe"}
         
-        # --- HYBRID ARGUMENT BUILDER ---
         $argsList = "-config `"$configPath`""
         
         if($modeVal -eq "machine"){
@@ -386,7 +388,6 @@ $btnRun.Add_Click({
         return
     }
     
-    # --- HYBRID ARGUMENT BUILDER ---
     $argsList = "-config `"$configPath`""
     
     if($job.mode -eq "machine"){
